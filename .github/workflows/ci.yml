@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: false
+      # --locked installs exactly what uv.lock records, verified against its hashes.
+      - run: uv sync --locked
+      - run: uv run --locked pytest -q
+
+  package:
+    name: Package contents and install
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Plant untracked files that must not be packaged
+        run: |
+          echo stray > openbb_oxarchive/stray.txt
+          echo SECRET=1 > openbb_oxarchive/.env
+          mkdir -p .scratch && echo stray > .scratch/stray.py
+      - run: uv build --build-constraint build-constraints.txt --require-hashes --out-dir dist-check
+      - name: Every packaged file is tracked source or build metadata
+        run: |
+          set -euo pipefail
+          git ls-files > tracked.txt
+          python3 - <<'PY'
+          import glob, sys, tarfile, zipfile
+          tracked = set(open("tracked.txt").read().split())
+          sdist = tarfile.open(glob.glob("dist-check/*.tar.gz")[0])
+          sdist_files = {m.name.split("/", 1)[1] for m in sdist.getmembers() if m.isfile()}
+          wheel_files = set(zipfile.ZipFile(glob.glob("dist-check/*.whl")[0]).namelist())
+          bad = sorted(f for f in sdist_files if f not in tracked and f != "PKG-INFO")
+          bad += sorted(f for f in wheel_files if f not in tracked and ".dist-info/" not in f)
+          if not any(f.startswith("openbb_oxarchive/") for f in wheel_files):
+              sys.exit("::error::the wheel has no openbb_oxarchive package")
+          sys.exit(f"::error::unexpected packaged files: {bad}" if bad else 0)
+          PY
+      - name: The wheel installs and registers with OpenBB
+        run: |
+          uv venv --python 3.12 /tmp/check
+          uv pip install --python /tmp/check/bin/python dist-check/*.whl
+          cd /tmp && /tmp/check/bin/python -I -c "
+          from importlib.metadata import entry_points
+          names = {e.name for e in entry_points(group='openbb_provider_extension')}
+          assert 'oxarchive' in names, names
+          from openbb_oxarchive import oxarchive_provider
+          print(len(oxarchive_provider.fetcher_dict), 'fetchers')
+          "

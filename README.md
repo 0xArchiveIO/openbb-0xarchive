@@ -24,6 +24,8 @@ obb.user.credentials.oxarchive_api_key = "YOUR_KEY"
 
 Or add `"oxarchive_api_key": "YOUR_KEY"` to `credentials` in `~/.openbb_platform/user_settings.json`.
 
+Sample data: one free week of Hyperliquid and Lighter data, as Parquet, on [Hugging Face](https://huggingface.co/datasets/0xArchive/hyperliquid-lighter-market-data-sample).
+
 ## Use
 
 ```python
